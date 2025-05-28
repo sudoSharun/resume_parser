@@ -29,7 +29,7 @@ This project implements an intelligent and scalable resume parsing system design
 
 ### Step 1: Clone the repository
 ```bash
-git clone https://github.com/your-username/resume_parser_lc.git
+git clone https://github.com/sudoSharun/resume_parser.git
 cd resume_parser_lc
 ```
 
@@ -45,6 +45,3 @@ Start the application using Docker Compose:
 docker-compose up --build
 ```
 This will set up all necessary services, including the database and message broker.
-
-## Testing
-To test the application, ensure all services are running and use the provided test scripts or API endpoints to validate functionality.
