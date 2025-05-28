@@ -1,90 +1,125 @@
 import boto3
 import json
-import os
+import asyncio
 import tempfile
 from app.utils.logs import Logger
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, Docx2txtLoader
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_aws import ChatBedrock
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_experimental.text_splitter import SemanticChunker
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.chains import create_retrieval_chain
+from app.llm.postprocessing.pp import ResumeDetails
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from app.llm.tools.resume_pydantic_model import ToolSpecWrapper
-from app.llm.postprocessing.resume_parser_pp import ToolSpecWrapperPostProcessing
-from app.configs.appconf import Environmentals
+from app.llm.tools.resume_parser_tool import EducationInputSchema, ProjectInputSchema, JobInputSchema, ProfessionalInputSchema, PersonalInputSchema
+from app.configs.appconf import env
+from app.services.text_loader import ExtractText
+from app.endpoints.errors import APIException
+from app.llm.chunk_classifier import ChunkClassifier
+from langchain_core.documents import Document
 
-env = Environmentals()
 log = Logger()
+
+embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 class ResumeParser:
     def __init__(self, resume_path: str):
         self.resume_path = resume_path
-        self.parser = PydanticOutputParser(pydantic_object=ToolSpecWrapper)
-        self.embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        self.splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        self.prompt = self.create_prompt()
-        self.retriever = self.create_retriever()
-        self.llm = ChatBedrock(
+        self.haikullm = self._create_llm(env.MODEL_HAIKU)
+        self.sonnetllm = self._create_llm(env.MODEL_SONNET)
+        # self.deepseekllm = self._create_llm(env.MODEL_DEEPSEEK)
+        self.splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=50)
+        self.serialized_chunks = self._create_serialized_chunks()
+
+    def _create_llm(self, MODEL_ID: str):
+        return ChatBedrock(
             client=boto3.client("bedrock-runtime", region_name="us-east-1"),
-            model_id=env.MODEL_HAIKU,
+            model_id=MODEL_ID,
             model_kwargs={"temperature": 0.2, "max_tokens": 3000}
         )
-        self.document_chain = create_stuff_documents_chain(self.llm, self.prompt)
 
-    def create_prompt(self):
+    def _clean_chunks(self, chunk_list: list[str]) -> list[str]:
+        """
+        Cleans the input chunk list by removing newlines, tabs, extra spaces, and stripping whitespace.
+        """
+        cleaned_chunks = []
+        for chunk in chunk_list:
+            if chunk.strip():
+                cleaned_chunk = chunk.replace("\n", " ").replace("\t", "")
+                cleaned_chunk = ' '.join(cleaned_chunk.split())
+                cleaned_chunks.append(cleaned_chunk)
+        return cleaned_chunks
+    
+    def _create_serialized_chunks(self):
+        try:
+            resume_text = ExtractText(self.resume_path).text_content
+            chunks = self.splitter.split_text(resume_text)
+            chunks = self._clean_chunks(chunks)
+            serialized_chunks = {i: chunk for i, chunk in enumerate(chunks)}
+            return serialized_chunks
+        except Exception as e:
+            log.error(f"Error while creating serialized chunks: {str(e)}")
+            raise APIException(500)
+        
+    def _create_prompt(self, parser: PydanticOutputParser):
         prompt = ChatPromptTemplate.from_template("""
                                     Please extract resume details from the provided context and return ONLY a JSON object.
                                     Do not include any other text, explanations, or formatting outside the JSON object.
-                                    
+
                                     <context>
                                     {context}
                                     </context>
-                                    
+
                                     {format_instructions}
-                                    
+
                                     Return ONLY the JSON object and nothing else.
-                                """).partial(format_instructions=self.parser.get_format_instructions())
+                                """).partial(format_instructions=parser.get_format_instructions())
         return prompt
+
+    def _postprocess_results(self, results):
+        combined_results = {}
+        for result in results:
+            combined_results.update(result)
+        try:
+            combined_results = ResumeDetails(**combined_results).model_dump()
+            return combined_results
+        except Exception as e:
+            log.error(f"Error while postprocessing results: {str(e)}")
+            raise APIException(500)
     
-    def create_retriever(self):
-        file_extension = self.resume_path.lower().rsplit('.', 1)[-1]  # Extract file extension
+    async def parse_details(self, tool_spec: PydanticOutputParser, chunk_indexes, llm):
+        raw_response = None
+        try:
+            documents = [
+                Document(page_content=self.serialized_chunks[idx]) for idx in chunk_indexes
+            ]
+            prompt = self._create_prompt(tool_spec)
+            stuff_chain = create_stuff_documents_chain(llm, prompt, document_variable_name="context")
+            result = await stuff_chain.ainvoke({"context": documents})
+            raw_response = result
+            result = json.loads(result)
+            return result
+        except Exception as e:
+            log.error(f"Error while parsing details: {str(e)}")
+            log.error(f"Raw response: {raw_response}")
+            raise APIException(500)
 
-        loader_mapping = {
-            "pdf": PyPDFLoader,
-            "doc": UnstructuredWordDocumentLoader,
-            "docx": Docx2txtLoader,
-        }
+    async def run(self):
+        professional_parser = PydanticOutputParser(pydantic_object=ProfessionalInputSchema)
+        personal_parser = PydanticOutputParser(pydantic_object=PersonalInputSchema)
+        education_parser = PydanticOutputParser(pydantic_object=EducationInputSchema)
+        project_parser = PydanticOutputParser(pydantic_object=ProjectInputSchema)
+        job_parser = PydanticOutputParser(pydantic_object=JobInputSchema)
+        
+        classified_chunks = ChunkClassifier(self.serialized_chunks).classify()
 
-        loader_class = loader_mapping.get(file_extension)
-
-        if loader_class:
-            loader = loader_class(self.resume_path)
-            resume_texts = loader.load()
-        else:
-            log.logger.error(f"Unsupported file extension: {self.resume_path}")
-            return None
-
-        chunks = self.splitter.split_documents(resume_texts)
-        chunk_texts = [chunk.page_content for chunk in chunks]
-        db = Chroma.from_texts(chunk_texts, self.embedding_function, persist_directory=tempfile.TemporaryDirectory().name)
-        store_size = len(chunk_texts)
-        return db.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": round(0.85 * store_size),
-                "lambda_mult": 0.5
-            }
+        results = await asyncio.gather(
+            self.parse_details(project_parser, classified_chunks["ProjectDetails"], self.sonnetllm),
+            self.parse_details(job_parser, classified_chunks["JobDetails"], self.sonnetllm),
+            self.parse_details(personal_parser, classified_chunks["PersonalInfo"], self.haikullm),
+            self.parse_details(education_parser, classified_chunks["EducationDetails"], self.haikullm),
+            self.parse_details(professional_parser, classified_chunks["ProfessionalInfo"], self.sonnetllm),
         )
-
-    def run(self):
-        retrieval_chain = create_retrieval_chain(self.retriever, self.document_chain)
-        result = retrieval_chain.invoke({
-            "input": "Extract all possible resume details comprehensively",
-            "context": "Provide maximum detail from the resume"
-        })
-        tool_spec_wrapper = ToolSpecWrapperPostProcessing.model_validate(json.loads(result["answer"]))
-        input_schema = tool_spec_wrapper.toolSpec.inputSchema.model_dump()
-        return input_schema
+        
+        combined_results = self._postprocess_results(results)
+        return combined_results
