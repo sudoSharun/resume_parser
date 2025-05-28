@@ -1,6 +1,7 @@
 # RESUME PARSER
 
 ![Resume Parser Workflow](readme-assets/resume_parser_page.jpg)
+
 ## Table of Contents
 - [Description](#description)
 - [Tech Stack](#tech-stack)
