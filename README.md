@@ -20,10 +20,15 @@ This project implements an intelligent and scalable resume parsing system design
 - Docker
 
 ## Workflow
-1. Resumes are uploaded to the system.
-2. The parser processes the resumes and extracts relevant information.
-3. Extracted data is stored in a PostgreSQL database.
-4. Results are made available for further analysis or integration.
+
+1. Accept resume and upload it to S3/SFTP, then push ID to RabbitMQ
+2. RabbitMQ triggers downstream processing
+3. Extract raw text from the resume based on file type
+4. Split extracted text into chunks with overlap
+5. Classify text chunks into predefined categories using an LLM
+6. Parse each classified chunk into structured JSON using LLMs
+7. Merge and clean all parsed data into a single JSON
+8. Update the JSON into the PostgreSQL database and trigger a callback
 
 ## Setup
 
