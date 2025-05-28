@@ -10,7 +10,7 @@
 - [Testing](#testing)
 
 ## Description
-This project is a resume parser designed to extract and process information from resumes using machine learning and natural language processing techniques.
+This project implements an intelligent and scalable resume parsing system designed to extract, classify, and structure information from resumes using Large Language Models (LLMs). Built with a microservices-based architecture and message queuing via RabbitMQ, the system ensures efficient asynchronous processing, making it suitable for high-volume resume analysis.
 
 ## Tech Stack
 - Python
