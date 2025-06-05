@@ -6,7 +6,7 @@ from fastapi.security import HTTPBearer
 bearer = HTTPBearer()
 
 app = FastAPI(
-    title="IREPO PARSER",
+    title="RESUME PARSER",
     description="This API accepts JD & Resumes and finds the best match",
     version="1.0",
     docs_url="/docs",
