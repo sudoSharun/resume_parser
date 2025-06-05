@@ -7,7 +7,7 @@ bearer = HTTPBearer()
 
 app = FastAPI(
     title="RESUME PARSER",
-    description="This API accepts JD & Resumes and finds the best match",
+    description="This API accepts resume and extract important details from it",
     version="1.0",
     docs_url="/docs",
     redoc_url=None
@@ -21,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(routes.router, tags=["IREPO PARSER"])
+app.include_router(routes.router, tags=["RESUME PARSER"])
 
 @app.get("/healthcheck", tags=["Default"])
 async def healthcheck() -> dict:
